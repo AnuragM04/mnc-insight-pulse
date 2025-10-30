@@ -5,7 +5,7 @@ pipeline {
     IMAGE_NAME     = "mnc-insight-pulse"
     NETWORK        = "jenkins-net"
     CONTAINER_NAME = "mip_dev"
-    PORT           = "3000"            // host port; change to 8081 if you prefer
+    PORT           = "3000"            // change to 8081 if you prefer
     CONTAINER_PORT = "80"
     TAG            = "dev-${env.BUILD_NUMBER}"
   }
@@ -55,7 +55,6 @@ pipeline {
               -p ${PORT}:${CONTAINER_PORT} \
               ${IMAGE_NAME}:${TAG}
           """
-          // small warmup pause
           sleep time: 3, unit: 'SECONDS'
         }
       }
@@ -65,24 +64,25 @@ pipeline {
       steps {
         script {
           echo "Smoke testing http://localhost:${PORT} with retries..."
-          sh '''
+          // Use Groovy string interpolation so ${PORT} is substituted before the shell runs.
+          sh """
             set -e
             tries=0
             max=12
-            while [ $tries -lt $max ]; do
-              status=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 http://localhost:'"${PORT}"' || echo "000")
-              echo "Attempt $((tries+1))/$max - HTTP $status"
-              if [ "$status" = "200" ]; then
+            while [ \$tries -lt \$max ]; do
+              status=\$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 http://localhost:${PORT} || echo "000")
+              echo "Attempt \$((tries+1))/\$max - HTTP \$status"
+              if [ "\$status" = "200" ]; then
                 echo "Smoke test passed"
                 exit 0
               fi
-              tries=$((tries+1))
+              tries=\$((tries+1))
               sleep 2
             done
-            echo "Smoke test failed after $max attempts" >&2
+            echo "Smoke test failed after \$max attempts" >&2
             docker logs ${CONTAINER_NAME} --tail 200 || true
             exit 1
-          '''
+          """
         }
       }
     }
