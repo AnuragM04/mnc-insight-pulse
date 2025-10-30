@@ -13,10 +13,8 @@ pipeline {
   stages {
     stage('Checkout') {
       steps {
-        echo "📥 Checking out branch: ${env.BRANCH_NAME ?: 'main'}"
+        echo "Checking out repository"
         checkout scm
-        // If you need to force a particular branch use:
-        // git branch: 'dev', url: 'https://github.com/AnuragM04/mnc-insight-pulse.git'
       }
     }
 
@@ -30,7 +28,7 @@ pipeline {
     stage('Build Docker Image') {
       steps {
         script {
-          echo "🐳 Building Docker image ${IMAGE_NAME}:${TAG} ..."
+          echo "Building Docker image ${IMAGE_NAME}:${TAG}"
           sh "docker build -t ${IMAGE_NAME}:${TAG} -f Dockerfile ."
         }
       }
@@ -39,9 +37,9 @@ pipeline {
     stage('Stop & Cleanup Previous') {
       steps {
         script {
-          echo "🧹 Stopping and removing any old container named ${CONTAINER_NAME}..."
+          echo "Stopping and removing any old container named ${CONTAINER_NAME}..."
           sh "docker rm -f ${CONTAINER_NAME} || true"
-          // optionally keep the network; create if missing
+          echo "Ensuring docker network ${NETWORK} exists (no-op if already present)..."
           sh "docker network create ${NETWORK} || true"
         }
       }
@@ -50,16 +48,15 @@ pipeline {
     stage('Run Container') {
       steps {
         script {
-          echo "🚀 Running container ${CONTAINER_NAME} (host:${PORT} -> container:${CONTAINER_PORT})..."
-          // Run detached and attach to user-network so containers can talk to each other if needed
+          echo "Running container ${CONTAINER_NAME} mapping host port ${PORT} -> container port ${CONTAINER_PORT}..."
           sh """
             docker run -d --name ${CONTAINER_NAME} \
               --network ${NETWORK} \
               -p ${PORT}:${CONTAINER_PORT} \
               ${IMAGE_NAME}:${TAG}
           """
-          // small warmup
-          sleep 3
+          // small warmup pause
+          sleep time: 3, unit: 'SECONDS'
         }
       }
     }
@@ -67,24 +64,22 @@ pipeline {
     stage('Smoke Test') {
       steps {
         script {
-          echo "🔁 Smoke testing http://localhost:${PORT} with retries..."
+          echo "Smoke testing http://localhost:${PORT} with retries..."
           sh '''
             set -e
             tries=0
             max=12
-            until [ $tries -ge $max ]
-            do
+            while [ $tries -lt $max ]; do
               status=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 http://localhost:'"${PORT}"' || echo "000")
               echo "Attempt $((tries+1))/$max - HTTP $status"
               if [ "$status" = "200" ]; then
-                echo "✅ Smoke test passed"
+                echo "Smoke test passed"
                 exit 0
               fi
               tries=$((tries+1))
               sleep 2
             done
-            echo "❌ Smoke test failed after $max attempts" >&2
-            # print container logs to help debugging
+            echo "Smoke test failed after $max attempts" >&2
             docker logs ${CONTAINER_NAME} --tail 200 || true
             exit 1
           '''
@@ -94,7 +89,7 @@ pipeline {
 
     stage('Post-Build Cleanup') {
       steps {
-        echo "🧽 Pruning unused images (optional)..."
+        echo "Pruning unused images (optional)"
         sh "docker image prune -f || true"
       }
     }
@@ -102,7 +97,15 @@ pipeline {
 
   post {
     success {
-      echo "🎉 Build & deploy succeeded: ${IMAGE_NAME}:${TAG} running as ${CONTAINER_NAME} on host:${PORT}"
+      echo "Build and deploy succeeded: ${IMAGE_NAME}:${TAG}"
     }
     failure {
-      echo "💥 Build failed — leaving containers for debug (see
+      echo "Build failed — see console output for details. Container logs printed above if available."
+      sh "docker ps -a || true"
+      sh "docker logs ${CONTAINER_NAME} --tail 200 || true"
+    }
+    always {
+      echo "Pipeline finished."
+    }
+  }
+}
