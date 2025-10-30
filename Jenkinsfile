@@ -14,7 +14,7 @@ pipeline {
             steps {
                 echo "📥 Checking out branch: ${env.BRANCH_NAME}"
                 checkout scm
-                git branch: 'dev', url: 'https://github.com/junaid6468/mnc-insight-pulse.git'
+                git branch: 'dev', url: 'https://github.com/AnuragM04/mnc-insight-pulse.git'
             }
         }
 
