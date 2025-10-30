@@ -1,99 +1,108 @@
 pipeline {
-    agent any
+  agent any
 
-    environment {
-        IMAGE_NAME = "mnc-insight-pulse"
-        NETWORK = "jenkins-net"
-        CONTAINER_NAME = "mip_dev"
-        PORT = "3000"
+  environment {
+    IMAGE_NAME     = "mnc-insight-pulse"
+    NETWORK        = "jenkins-net"
+    CONTAINER_NAME = "mip_dev"
+    PORT           = "3000"            // host port; change to 8081 if you prefer
+    CONTAINER_PORT = "80"
+    TAG            = "dev-${env.BUILD_NUMBER}"
+  }
+
+  stages {
+    stage('Checkout') {
+      steps {
+        echo "📥 Checking out branch: ${env.BRANCH_NAME ?: 'main'}"
+        checkout scm
+        // If you need to force a particular branch use:
+        // git branch: 'dev', url: 'https://github.com/AnuragM04/mnc-insight-pulse.git'
+      }
     }
 
-    stages {
-
-        stage('Checkout') {
-            steps {
-                echo "📥 Checking out branch: ${env.BRANCH_NAME}"
-                checkout scm
-                git branch: 'dev', url: 'https://github.com/AnuragM04/mnc-insight-pulse.git'
-            }
-        }
-
-        stage('Verify Files') {
-            steps {
-                echo "Listing workspace contents..."
-                sh 'ls -al'
-            }
-        }
-
-        stage('Build Docker Image') {
-            steps {
-                script {
-                    echo "🐳 Building Docker image for ${IMAGE_NAME}..."
-                    sh "docker build -t ${IMAGE_NAME}:dev-${BUILD_NUMBER} -f Dockerfile ."
-                }
-            }
-        }
-
-        stage('Run Dev Container & Smoke Test') {
-            steps {
-                script {
-                    echo "🧹 Cleaning up any old containers..."
-                    sh "docker rm -f ${CONTAINER_NAME} || true"
-                    sh "docker network create ${NETWORK} || true"
-
-                    echo "🚀 Starting new container..."
-                    sh """
-                        docker run -d --name ${CONTAINER_NAME} \
-                        --network ${NETWORK} \
-                        -p ${PORT}:80 ${IMAGE_NAME}:dev-${BUILD_NUMBER}
-                    """
-
-                    echo "⏳ Waiting for app to boot before running smoke test..."
-                    def maxRetries = 15
-                    def success = false
-                    for (int i = 1; i <= maxRetries; i++) {
-                        // 🧠 Ping by container name (NOT localhost)
-                        def code = sh(script: "curl -s -o /dev/null -w '%{http_code}' http://${CONTAINER_NAME}:80 || true", returnStdout: true).trim()
-                        echo "Attempt ${i}/${maxRetries} — HTTP ${code}"
-                        if (code == '200') {
-                            echo '✅ Smoke test passed — app is running successfully!'
-                            success = true
-                            break
-                        }
-                        sleep(3)
-                    }
-                    if (!success) {
-                        error('❌ Smoke test failed — app did not start successfully.')
-                    }
-                }
-                dir("${WORKSPACE}") {
-                    sh 'echo "Building Docker image..."'
-                    sh 'docker build -t mnc-insight-pulse .'
-                }
-            }
-        }
-
-        stage('Run Docker Container') {
-            steps {
-                sh 'echo "Running Docker container on port 3000..."'
-                sh 'docker run -d -p 3000:80 mnc-insight-pulse'
-            }
-        }
-
-        stage('Post-Build Cleanup') {
-            steps {
-                echo "🧽 Cleaning up unused Docker images..."
-                sh "docker image prune -f || true"
-            }
-        }
+    stage('Verify Files') {
+      steps {
+        echo "Listing workspace contents..."
+        sh 'ls -al'
+      }
     }
 
-    post {
-        success {
-            echo "🎉 Build completed successfully for ${IMAGE_NAME}:dev-${BUILD_NUMBER}"
+    stage('Build Docker Image') {
+      steps {
+        script {
+          echo "🐳 Building Docker image ${IMAGE_NAME}:${TAG} ..."
+          sh "docker build -t ${IMAGE_NAME}:${TAG} -f Dockerfile ."
         }
-        failure {
-            echo "💥 Build failed! Check logs for errors."
-        }
+      }
     }
-}
+
+    stage('Stop & Cleanup Previous') {
+      steps {
+        script {
+          echo "🧹 Stopping and removing any old container named ${CONTAINER_NAME}..."
+          sh "docker rm -f ${CONTAINER_NAME} || true"
+          // optionally keep the network; create if missing
+          sh "docker network create ${NETWORK} || true"
+        }
+      }
+    }
+
+    stage('Run Container') {
+      steps {
+        script {
+          echo "🚀 Running container ${CONTAINER_NAME} (host:${PORT} -> container:${CONTAINER_PORT})..."
+          // Run detached and attach to user-network so containers can talk to each other if needed
+          sh """
+            docker run -d --name ${CONTAINER_NAME} \
+              --network ${NETWORK} \
+              -p ${PORT}:${CONTAINER_PORT} \
+              ${IMAGE_NAME}:${TAG}
+          """
+          // small warmup
+          sleep 3
+        }
+      }
+    }
+
+    stage('Smoke Test') {
+      steps {
+        script {
+          echo "🔁 Smoke testing http://localhost:${PORT} with retries..."
+          sh '''
+            set -e
+            tries=0
+            max=12
+            until [ $tries -ge $max ]
+            do
+              status=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 http://localhost:'"${PORT}"' || echo "000")
+              echo "Attempt $((tries+1))/$max - HTTP $status"
+              if [ "$status" = "200" ]; then
+                echo "✅ Smoke test passed"
+                exit 0
+              fi
+              tries=$((tries+1))
+              sleep 2
+            done
+            echo "❌ Smoke test failed after $max attempts" >&2
+            # print container logs to help debugging
+            docker logs ${CONTAINER_NAME} --tail 200 || true
+            exit 1
+          '''
+        }
+      }
+    }
+
+    stage('Post-Build Cleanup') {
+      steps {
+        echo "🧽 Pruning unused images (optional)..."
+        sh "docker image prune -f || true"
+      }
+    }
+  }
+
+  post {
+    success {
+      echo "🎉 Build & deploy succeeded: ${IMAGE_NAME}:${TAG} running as ${CONTAINER_NAME} on host:${PORT}"
+    }
+    failure {
+      echo "💥 Build failed — leaving containers for debug (see
